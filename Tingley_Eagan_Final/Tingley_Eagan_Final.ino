@@ -3,7 +3,7 @@
 // 'q' = stop
 // 'x' = exit
 // '+N\n' = N revolutions CW
-// '-N\n' = N revolutions CCW
+// '-M\n' = M revolutions CCW
 
 // DC motor commands:
 // 't<val> = sample interval (s)
@@ -14,15 +14,15 @@
 // 'i<val>' = set Ki
 // 'o1' = open loop mode
 
+// TODO: FreeRTOS
 // TODO: how to adjust speed of stepper?
-// TODO: Adjust pins
 // Disk pins
-const int stepPin = 11;
+const int stepPin = 3;
 const int dirPin = 9;
 const int optSensorPin = 5;
 
 // DC motor pins
-const int dcPin = 12;
+const int dcPin = 11;
 const int IN1_Pin = 7;
 const int IN2_Pin = 8;
 
@@ -214,6 +214,7 @@ void readSerial() {
         else dcCmdStop = true;
         break;
     }
+    user_input = "";
   }
 }
 
@@ -241,17 +242,17 @@ void DiskSequence(void) {
         cmdReady = false;
         EntryRunning = 0;
         diskNextState = DISK_RUNNING;
+      } else if (cmdStop) {
+        diskStarted = false;
+        cmdStop = false;
       }
-      cmdStop = false;
       break;
 
      case DISK_HOMING:
       // ENTRY
       if (EntryHoming == 0) {
         digitalWrite(dirPin, CW);
-        if (digitalRead(optSensorPin)) {
-          analogWrite(stepPin, 128);
-        }
+        analogWrite(stepPin, 128);
         EntryHoming = 1;
       }
 
@@ -269,7 +270,7 @@ void DiskSequence(void) {
         localRev = 0;
         inNotch = true;
         digitalWrite(dirPin, cmdDir);
-        analogWrite(stepPin, 128);
+        analogWrite(stepPin, 250);
         moveStartTime = millis();
         EntryRunning = 1;
       }
@@ -293,6 +294,7 @@ void DiskSequence(void) {
         moveStartTime = millis();
         localRev++;
         totalRev += (cmdDir == CW) ? 1 : -1;
+        Serial.print("r,");
         Serial.println(totalRev);
 
         // EXIT
@@ -418,7 +420,7 @@ void DCSequence(void) {
         break;
       }
 
-      // Sample timing
+      // ACTION: sample on interval
       if ((millis() - lastSampleTime_ms) >= (unsigned long)sampleInterval_ms) {
         lastSampleTime_ms = millis();
         
@@ -439,7 +441,8 @@ void DCSequence(void) {
     
         int pwmVal = (int)constrain((constrain(controlOutput, V_MIN, V_MAX) / V_MAX) * 255.0, 0, 255);
         analogWrite(dcPin, pwmVal);
-    
+
+        Serial.print("d,");
         Serial.print(voltage);
         Serial.print(',');
         Serial.println(pwmVal);
