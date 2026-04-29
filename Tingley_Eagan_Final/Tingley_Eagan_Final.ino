@@ -1,23 +1,33 @@
-// Disk commands:
-// 'h' = start
-// 'q' = stop
-// 'x' = exit
-// '+N\n' = N revolutions CW
-// '-M\n' = M revolutions CCW
+/**
+ * Serial command reference
+ * ────────────────────────
+ * Disk:
+ *   h        — Home disk (start)
+ *   q        — Stop disk
+ *   x        — Exit program
+ *   l/m/f    — Set speed: low (250 Hz) / medium (500 Hz) / fast (750 Hz)
+ *   +N       — Rotate N revolutions clockwise
+ *   -N       — Rotate N revolutions counter-clockwise
+ *
+ * DC motor:
+ *   t<val>   — Set sample interval (seconds)
+ *   d<val>   — Set run duration (seconds)
+ *   v<val>   — Set target voltage (volts)
+ *   p<val>   — Set Kp (switches to closed-loop)
+ *   i<val>   — Set Ki (switches to closed-loop)
+ *   o1       — Enable open-loop mode
+ *   s1       — Start DC motor run
+ *   s0       — Stop DC motor
+ *
+ * TODO: FreeRTOS
+ * TODO: do we need pwm.end() for speed changing?
+ */
 
-// DC motor commands:
-// 't<val> = sample interval (s)
-// 'd<val> = run duration (s)
-// 's1' = start (only applies to dc motor, not disk)
-// 's0' = stop
-// 'p<val>' = set Kp
-// 'i<val>' = set Ki
-// 'o1' = open loop mode
+#include "pwm.h"
 
-// TODO: FreeRTOS
-// TODO: how to adjust speed of stepper?
-// Disk pins
+// Disk / stepper pins
 const int stepPin = 3;
+PwmOut pwm(D3);
 const int dirPin = 9;
 const int optSensorPin = 5;
 
@@ -32,7 +42,7 @@ const byte DISK_HOMING = 1;
 const byte DISK_RUNNING = 2;
 const byte DISK_EXITING = 3;
 
-// dir
+// Rotation direction
 const byte CW = 1;
 const byte CCW = 0;
 
@@ -54,6 +64,8 @@ unsigned long moveStartTime = 0;
 bool cmdReady = false;
 int cmdCount = 0;
 byte cmdDir = CW;
+float cmdPWMFreq = 500.0;
+float cmdDuty = 50.0;
 bool cmdStop = false;
 bool cmdStart = false;
 bool cmdExit = false;
@@ -103,20 +115,75 @@ char command;
 float val;
 
 
+/**
+ * Equivalent to Arduino's map() but for floating-point values.
+ *
+ * @param x       Input value
+ * @param in_min  Lower bound of input range
+ * @param in_max  Upper bound of input range
+ * @param out_min Lower bound of output range
+ * @param out_max Upper bound of output range
+ * @return        Mapped output value (not clamped)
+ */
 float fmap(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+/**
+ * Start the disk 
+ * @param dir     CW or CCW
+ * @param freq    PWM frequency in Hz
+ * @param duty    Duty cycle percent (0–100)
+ */
+void diskMotorRun(byte dir, float freq, float duty) {
+  digitalWrite(dirPin, dir);
+  pwm.begin(freq, 0.0f);
+  pwm.pulse_perc(duty);
+}
+
+/** Stop the disk */
+void diskMotorStop() {
+  analogWrite(stepPin, 0);
+}
+
+/** Returns true when the optical sensor detects the notch (active low). */
+bool diskNotchDetected() {
+  return !digitalRead(optSensorPin);
+}
+
+/**
+ * Drive the DC motor at given PWM value.
+ * @param pwmVal  0–255
+ */
+void dcMotorSet(int pwmVal) {
+  pwmVal = constrain(pwmVal, 0, 255);
+  analogWrite(dcPin, pwmVal);
+}
+
+/** Stop the DC motor. */
+void dcMotorStop() {
+  analogWrite(dcPin, 0);
+}
+
+/**
+ * Read the DC motor's voltage.
+ * @return Voltage in volts (0–5 V mapped from A1).
+ */
+float dcSensorReadVolts() {
+  int raw = analogRead(A1);
+  return fmap((float)raw, 0.0, 1023.0, V_MIN, 5.0);
 }
 
 
 void setup() {
   Serial.begin(38400);
   
-  // Stepper
+  // Stepper / disk
   pinMode(stepPin, OUTPUT);
   pinMode(dirPin, OUTPUT);
   pinMode(optSensorPin, INPUT);
 
-  // DC
+  // DC motor
   pinMode(A0, INPUT);
   pinMode(A1, INPUT);
   pinMode(dcPin, OUTPUT);
@@ -126,6 +193,7 @@ void setup() {
   digitalWrite(IN2_Pin, LOW);
   analogWrite(dcPin, 0);
   
+  // Set both state machines in their initial states
   diskNextState = DISK_HOME;
   dcNextState = DC_IDLE;
 }
@@ -138,6 +206,13 @@ void loop() {
 }
 
 
+/**
+ * Reads one line from Serial and sets the appropriate command flags.
+ *
+ * Commands are single-character with an optional numeric suffix (e.g. "+3", "p0.5").
+ * Flags are used by DiskSequence() and DCSequence() on the same loop iteration
+ * or the next, so they should not be set more than once before being cleared.
+ */
 void readSerial() {
   if (Serial.available()) {
     user_input = Serial.readStringUntil('\n');
@@ -149,76 +224,58 @@ void readSerial() {
     val = user_input.substring(1).toFloat();
 
     switch(command) {
-      // Disk: start
-      case 'h': cmdStart = true; break;
 
-      // Disk: exit
-      case 'x': cmdExit = true; break;
-
-      // Disk: stop
-      case 'q': cmdStop = true; break;
+      // Disk commands
+      case 'h': cmdStart = true; break;     // Home / start  
+      case 'x': cmdExit = true; break;      // Exit
+      case 'q': cmdStop = true; break;      // Stop
+      case 'l': cmdPWMFreq = 250.0; break;  // Low speed
+      case 'm': cmdPWMFreq = 500.0; break;  // Medium speed
+      case 'f': cmdPWMFreq = 750.0; break;  // High speed
       
-      // Disk: +N = CW N rotations
-      case '+':
+      case '+':                             // CW N rotations
         cmdDir = CW;
         cmdCount = abs(val);
         cmdReady = true;
         break;
-
-      // Disk: -N = CCW N rotations  
-      case '-':
+  
+      case '-':                             // CCW N rotations
         cmdDir = CCW;
         cmdCount = abs(val);
         cmdReady = true;
         break;
 
-      // DC motor: Sample Interval
-      case 't': 
-        dcCmdT = true;
-        dcCmdVal = val;
-        break;
+      // DC motor commands
+      case 't': dcCmdT = true; dcCmdVal = val; break; // Sample interval (s)
+      case 'd': dcCmdD = true; dcCmdVal = val; break; // Run duration (s)
+      case 'v': dcCmdV = true; dcCmdVal = val; break; // Target voltage (V)
+      case 'p': dcCmdP = true; dcCmdVal = val; break; // Kp
+      case 'i': dcCmdI = true; dcCmdVal = val; break; // Ki
+      case 'o': dcCmdO = true; dcCmdVal = val; break; // Open/closed loop
 
-      // DC motor: Duration 
-      case 'd':
-        dcCmdD = true; 
-        dcCmdVal = val; 
-        break;
-
-      // DC motor: Voltage
-      case 'v': 
-        dcCmdV = true; 
-        dcCmdVal = val; 
-        break;
-
-      // DC motor: Kp
-      case 'p':
-        dcCmdP = true;
-        dcCmdVal = val;
-        break;
-
-      // DC motor: Ki
-      case 'i':
-        dcCmdI = true; 
-        dcCmdVal = val; 
-        break;
-
-      // DC motor: Open/closed loop
-      case 'o':
-        dcCmdO = true; 
-        dcCmdVal = val; 
-        break;
-
-      // DC motor: start
-      case 's':
+      case 's':                                       // Start/stop
         if (val == 1.0) dcCmdStart = true;
         else dcCmdStop = true;
         break;
     }
+
     user_input = "";
   }
 }
 
 
+/**
+ * States:
+ * 
+ *  - DISK_HOME    — Idle; waits for 'h' (home), 'x' (exit), or a rotation command.
+ *  - DISK_HOMING  — Spins CW until notch sensor activated, then returns to HOME.
+ *  - DISK_RUNNING — Executes the current cmdDir/cmdCount move, counting revolutions
+ *                 using the optical sensor. Handles mid-move command replacement.
+ *  - DISK_EXITING — Stops the motor and halts execution.
+ *
+ * Entry flags (EntryHoming, EntryRunning, EntryExiting) gate setup code
+ * inside each state. They must be reset to 0 before every transition into that state.
+ */
 void DiskSequence(void) {
   diskState = diskNextState;
 
@@ -227,57 +284,60 @@ void DiskSequence(void) {
     case DISK_HOME:
       // TEST: Check for buttons pressed
       if (cmdStart) {
-        // If start pressed, do setup
+        // If start pressed, do setup and move to homing
         cmdStart = false;
         diskStarted = true;
         EntryHoming = 0;
         diskNextState = DISK_HOMING;
+
       } else if (cmdExit) {
         // If exit pressed, stop executing
         cmdExit = false;
         EntryExiting = 0;
         diskNextState = DISK_EXITING;
+
       } else if (cmdReady && diskStarted) {
-        // Command entered (only valid after 'start' pressed)
+        // Rotation command received (only valid after 'start' pressed)
         cmdReady = false;
         EntryRunning = 0;
         diskNextState = DISK_RUNNING;
+
       } else if (cmdStop) {
+        // Clears started flag (start will need to be pressed again)
         diskStarted = false;
         cmdStop = false;
       }
       break;
 
      case DISK_HOMING:
-      // ENTRY
+      // ENTRY: Start spinning CW
       if (EntryHoming == 0) {
-        digitalWrite(dirPin, CW);
-        analogWrite(stepPin, 128);
+        diskMotorRun(CW, cmdPWMFreq, cmdDuty);
         EntryHoming = 1;
       }
 
-      // EXIT
-      if (!digitalRead(optSensorPin)) {
-        analogWrite(stepPin, 0);
+      // EXIT: Notch detected, stop and return home
+      if (diskNotchDetected()) {
+        diskMotorStop();
         EntryHoming = 0;
         diskNextState = DISK_HOME;
       }
       break;
 
     case DISK_RUNNING:
-      // ENTRY
+      // ENTRY: reset local counter and begin moving
       if (EntryRunning == 0) {
         localRev = 0;
         inNotch = true;
-        digitalWrite(dirPin, cmdDir);
-        analogWrite(stepPin, 250);
+        diskMotorRun(cmdDir, cmdPWMFreq, cmdDuty);
+        
         moveStartTime = millis();
         EntryRunning = 1;
       }
 
       // INTERRUPT: check whether another command was sent
       if (cmdReady) {
-        analogWrite(stepPin, 0);
+        diskMotorStop();
         EntryRunning = 0;
         cmdReady = false;
         diskNextState = DISK_RUNNING;
@@ -288,18 +348,20 @@ void DiskSequence(void) {
       if (((millis() - moveStartTime) < 100) && inNotch) break;
       inNotch = false;
 
-      // TEST: revolution complete
-      if (!digitalRead(optSensorPin)) {
+      // TEST: notch detected, one revolution complete
+      if (diskNotchDetected()) {
         inNotch = true;
-        moveStartTime = millis();
+        moveStartTime = millis(); // Reset 'in notch' timer
         localRev++;
         totalRev += (cmdDir == CW) ? 1 : -1;
+        
+        // Report position
         Serial.print("r,");
         Serial.println(totalRev);
 
-        // EXIT
+        // EXIT: target revolution count reached
         if (localRev >= cmdCount) {
-          analogWrite(stepPin, 0);
+          diskMotorStop();
           EntryRunning = 0;
           diskNextState = DISK_HOME;
         }
@@ -307,18 +369,18 @@ void DiskSequence(void) {
 
        // EXIT: stop or exit has been pressed
        if(cmdStop || cmdExit) {
-         analogWrite(stepPin, 0);
-         EntryRunning = 0;
-         diskNextState = cmdExit ? DISK_EXITING : DISK_HOME;
-         cmdStop = cmdExit = false;
-         if (diskNextState == DISK_EXITING) EntryExiting = 0;
+        diskMotorStop();
+        EntryRunning = 0;
+        diskNextState = cmdExit ? DISK_EXITING : DISK_HOME;
+        cmdStop = cmdExit = false;
+        if (diskNextState == DISK_EXITING) EntryExiting = 0;
        }
        break;
 
       case DISK_EXITING:
         if (EntryExiting == 0) {
-          analogWrite(stepPin, 0);
-          diskStarted      = false;
+          diskMotorStop();
+          diskStarted = false;
           EntryExiting = 1;
           // TODO: should this kill the entire program or should it set 'start' flag false?
           exit(0);
@@ -328,12 +390,23 @@ void DiskSequence(void) {
 }
 
 
+/**
+ * Parameter updates (t/d/v/p/i/o commands) are applied at the start of every call
+ * before state logic executes, so new values take effect on the next sample.
+ *
+ * States:
+
+ *  - DC_IDLE     — Motor off; waits for 's1' to begin a run.
+ *  - DC_PLOTTING — Runs the control loop at sampleInterval_ms, printing
+ *                "d,<voltage>,<pwmVal>" lines until duration_ms elapses
+ *                or a stop command is received.
+ */
 void DCSequence(void) {
 
   // Apply parameter updates before going into state logic
   if (dcCmdT) { 
     float t = dcCmdVal; 
-    if (t < 0.001) t = 0.001; 
+    if (t < 0.001) t = 0.001;     // TODO: do we need this?
     sampleInterval_ms = t * 1000.0; 
     dcCmdT = false; 
   }
@@ -367,9 +440,9 @@ void DCSequence(void) {
 
   switch (dcState) {
     case DC_IDLE:
-      // ENTRY
+      // ENTRY: ensure motor is off
       if (EntryDCIdle == 0) {
-        analogWrite(dcPin, 0);
+        dcMotorStop();
         EntryDCIdle = 1;
         EntryDCPlotting = 0;
       }
@@ -397,7 +470,7 @@ void DCSequence(void) {
 
       // EXIT: Duration reached
       if ((millis() - plotStartTime_ms) >= (unsigned long)duration_ms) {
-        analogWrite(dcPin, 0);
+        dcMotorStop();
         EntryDCPlotting = 0;
         dcNextState = DC_IDLE;
         break;
@@ -406,7 +479,7 @@ void DCSequence(void) {
       // EXIT: stop command
       if (dcCmdStop) {
         dcCmdStop = false;
-        analogWrite(dcPin, 0);
+        dcMotorStop();
         EntryDCPlotting = 0;
         dcNextState = DC_IDLE;
         break;
@@ -424,13 +497,13 @@ void DCSequence(void) {
       if ((millis() - lastSampleTime_ms) >= (unsigned long)sampleInterval_ms) {
         lastSampleTime_ms = millis();
         
-        int sensorVal = analogRead(A1);
-        float voltage = fmap((float)sensorVal, 0.0, 1023.0, V_MIN, 5.0);
+        float voltage = dcSensorReadVolts();
     
         if (openLoop) {
           // Open loop = desired is exactly applied as output
           controlOutput = stepval_V;
         } else {
+          // Closed-loop PI: compute error and accumulate integral
           double error = stepval_V - voltage;
     
           integral += error * sampleInterval_ms;
@@ -439,8 +512,9 @@ void DCSequence(void) {
           controlOutput = (Kp * error) + (Ki * integral);
         }
     
+        // Scale control output voltage to 8-bit PWM, clamped to valid range
         int pwmVal = (int)constrain((constrain(controlOutput, V_MIN, V_MAX) / V_MAX) * 255.0, 0, 255);
-        analogWrite(dcPin, pwmVal);
+        dcMotorSet(pwmVal);
 
         Serial.print("d,");
         Serial.print(voltage);
