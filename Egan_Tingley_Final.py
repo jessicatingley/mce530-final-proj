@@ -20,7 +20,7 @@ import serial
 # Setting up connection to serial port for arduino data collection (make sure to change the COM port to match your system)
 from pyparsing import line
 import serial
-ser = serial.Serial('COM11', 115200, timeout=0)  # Update 'COM__' to the Arduino's port
+ser = serial.Serial('COM7', 38400, timeout=0)  # Update 'COM__' to the Arduino's port
 
 class App(tk.Tk):
 
@@ -226,9 +226,7 @@ class App(tk.Tk):
 
         self.send_trajectory_button = tk.Button(self.velocity_trajectory_frame, text="Send Trajectory", command=self.send_trajectory)
         self.send_trajectory_button.place(x=200, y=180)
-
-        self.preview_trajectory_button = tk.Button(self.velocity_trajectory_frame, text="Preview Trajectory", command=self.preview_trajectory)
-        self.preview_trajectory_button.place(x=50, y=180)        
+ 
 
 # -------------------------------------
 # ----  # Create frame for controlling the stepper motor disc and displaying the net revolutions
@@ -250,27 +248,31 @@ class App(tk.Tk):
         self.fast_button = tk.Radiobutton(self.disc_control_frame, text="Fast", variable=self.disc_speed, value="fast")
         self.fast_button.place(x=150, y=25)
 
+        # Start and stop buttons to initially home the disc or stop the motion immediately
+        self.start_disc_button = tk.Button(self.disc_control_frame, text="Start/Home Disc", fg="green", command=self.start_disc_motion)
+        self.start_disc_button.grid(row=1, column=0, padx=10, pady=10)
+
+        self.stop_disc_button = tk.Button(self.disc_control_frame, text="Stop Disc", command=self.stop_disc_motion, fg="red")
+        self.stop_disc_button.grid(row=1, column=1, padx=10, pady=10)
+
+
         # Buttons to send single CW or single CCW
         self.cw_button = tk.Button(self.disc_control_frame, text="Single CW", command=self.send_single_cw)
-        self.cw_button.grid(row=1, column=0, padx=10, pady=10)
+        self.cw_button.grid(row=2, column=0, padx=10, pady=10)
         self.ccw_button = tk.Button(self.disc_control_frame, text="Single CCW", command=self.send_single_ccw)
-        self.ccw_button.grid(row=1, column=1, padx=10, pady=10)
+        self.ccw_button.grid(row=2, column=1, padx=10, pady=10)
 
         # Slider for selecting N CW commands (1-10) and send button
         self.cw_slider = tk.Scale(self.disc_control_frame, from_=2, to=10, orient=tk.HORIZONTAL)
-        self.cw_slider.grid(row=2, column=0, padx=5, pady=10)
+        self.cw_slider.grid(row=3, column=0, padx=5, pady=10)
         self.cw_send_button = tk.Button(self.disc_control_frame, text="Send N CW", command=self.send_N_cw)
-        self.cw_send_button.grid(row=2, column=1, padx=10, pady=10)
+        self.cw_send_button.grid(row=3, column=1, padx=10, pady=10)
 
         # Slider for selecting M CCW commands (1-10) and send button
         self.ccw_slider = tk.Scale(self.disc_control_frame, from_=2, to=10, orient=tk.HORIZONTAL)
-        self.ccw_slider.grid(row=3, column=0, padx=10, pady=10)
+        self.ccw_slider.grid(row=4, column=0, padx=10, pady=10)
         self.ccw_send_button = tk.Button(self.disc_control_frame, text="Send M CCW", command=self.send_M_ccw)
-        self.ccw_send_button.grid(row=3, column=1, padx=10, pady=10)
-
-        # Stop button
-        self.stop_disc_button = tk.Button(self.disc_control_frame, text="Stop Disc", command=self.stop_disc_motion)
-        self.stop_disc_button.place(x=78,y=240)
+        self.ccw_send_button.grid(row=4, column=1, padx=10, pady=10)
 
         # Label to display net revolutions, this will be updated live from the serial output of the arduino
         self.net_rev_label = tk.Label(self.disc_control_frame, text="Net Revolutions: 0", fg="blue")
@@ -291,12 +293,33 @@ class App(tk.Tk):
         while self.serial_thread_running:
             if ser.in_waiting > 0:
                 raw_line = ser.readline().decode(errors="ignore").strip()
+                
+                parts = raw_line.split(",")
+                
                 try:
-                    y = float(raw_line.split(",")[0])  # Get the first value in case of multiple values separated by commas
-                    self.serial_queue.put(y)  # Add the new data point to the queue
-                    self.raw_voltage_label.config(text=f"Voltage Reading: {y} V")  # Update the voltage reading label
-                    pwm = float(raw_line.split(",")[1]) if len(raw_line.split(",")) > 1 else None  # Get the second value if it exists
-                    self.pwm_label.config(text=f"PWM Sent: {pwm}")  # Update the PWM label
+                    msg_type = parts[0]
+                    
+                    # DC motor sends a line with 'd' for first part
+                    #  - if no trajectory: d,voltage,pwm
+                    #  - if trajectory: d,voltage,pwm,target
+                    if msg_type == "d":
+                        voltage = float(parts[1])
+                        pwm = float(parts[2])
+
+                        target = None           # Default to no target
+                        if len(parts) >=4:
+                            target = float(parts[3])
+                
+                        self.serial_queue.put((voltage, target))       
+
+                        self.raw_voltage_label.config(text=f"Voltage Reading: {voltage} V")  # Update the voltage reading label
+                        self.pwm_label.config(text=f"PWM Sent: {pwm}")  # Update the PWM label
+                    
+                    # Stepper motor sends a line with 'r' at the start (for rev count)
+                    elif msg_type == "r":
+                        rev_count = int(float(parts[1]))
+                        self.net_rev_label.config(text=f"Net Revolutions: {rev_count}")
+                
                 except ValueError:
                     # ignore any non-numeric junk just in case
                     pass
@@ -316,6 +339,8 @@ class App(tk.Tk):
         # Set up data deques
         self.x_data = deque(maxlen=self.max_points)
         self.y_data = deque(maxlen=self.max_points)
+        self.target_x_data = deque(maxlen=self.max_points)
+        self.target_y_data = deque(maxlen=self.max_points)
 
         # Create figure and axis
         graph = FigureCanvasTkAgg(Figure(figsize=(6, 4), dpi=100), master=self.window)
@@ -331,7 +356,46 @@ class App(tk.Tk):
 
         self.canvas = graph
 
-# create empty functions to test GUI spacing and button functionality before adding in the serial communication and plotting code
+    def update_plot_config(self):
+        """Ensures graph doesn't clear when num points is changed"""
+        try:
+            new_max = int(self.num_data_points_entry.get())
+            if not (50 <= new_max <= 5000):
+                self.show_error("Number of data points must be between 50 and 5000.")
+                return
+        except ValueError:
+            self.show_error("Number of data points must be an integer.")
+            return
+
+        try:
+            y_min = float(self.y_min_entry.get())
+            y_max = float(self.y_max_entry.get())
+            if y_min >= y_max:
+                self.show_error("Y-Min must be less than Y-Max.")
+                return
+        except ValueError:
+            self.show_error("Y-Min and Y-Max must be numbers.")
+            return
+
+        # update status bar to show plot configuration was updated
+        self.status_label.config(text=f"Plot Configuration Updated", fg="Purple")
+        self.clear_error()
+
+        # Preserve existing data
+        self.x_data = deque(self.x_data, maxlen=new_max)
+        self.y_data = deque(self.y_data, maxlen=new_max)
+        self.target_x_data = deque(maxlen=self.max_points)
+        self.target_y_data = deque(maxlen=self.max_points)
+        self.max_points = new_max
+        self.y_min = y_min
+        self.y_max = y_max
+
+        # Update axes limits and redraw plot with new configuration
+        self.ax.set_ylim(self.y_min, self.y_max)
+        self.canvas.draw()
+
+
+# Create empty functions to test GUI spacing and button functionality before adding in the serial communication and plotting code
     def select_simulation_mode(self):
         self.status_label.config(text="Simulation Mode Selected", fg="purple")
         self.simulation_mode_button.config(state=tk.DISABLED)
@@ -343,11 +407,83 @@ class App(tk.Tk):
         self.real_mode_button.config(state=tk.DISABLED)
     
     def start_plot(self):
-        self.status_label.config(text="Plotting Started", fg="green")
+        self.status_label.config(text="Plotting Started DC Motor Running", fg="green")
         self.start_button.config(state=tk.DISABLED)
         self.simulation_mode_button.config(state=tk.DISABLED)
         self.real_mode_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
+
+        self.running = True
+        self.start_time = time.perf_counter()
+        ser.write(str("s1" + "\n").encode())  # Send start command to Arduino 
+                
+        # Clear serial queue and buffer when restart plot to prevent old data from being plotted when starting again
+        while not self.serial_queue.empty():
+            try:
+                self.serial_queue.get_nowait()  # Clear any remaining data in the queue
+                self.serial_queue.task_done()
+            except queue.Empty:
+                break
+        ser.reset_input_buffer()  # Clear the serial buffer to prevent old data from being read when starting again
+
+        self.update_plot()
+    
+    def update_plot(self):
+        if not self.running:
+            return
+
+        t = time.perf_counter() - self.start_time
+
+        if t >= float(self.sample_duration_entry.get()):
+            self.stop_plot()
+            return
+        
+        got_new_data = False
+
+        while not self.serial_queue.empty():
+            voltage, target = self.serial_queue.get()
+            got_new_data = True
+
+            self.x_data.append(self.sample_index)
+            self.y_data.append(voltage)
+
+            if target is not None:
+                self.target_x_data.append(self.sample_index)
+                self.target_y_data.append(target)
+
+            self.sample_index += 1
+
+        if got_new_data and len(self.x_data) > 0 and len(self.y_data) > 0:
+            
+            self.ax.cla()
+            self.ax.set_ylim(*self.get_y_limits())
+
+            self.ax.set_xlim(
+                    self.x_data[0],
+                    max(self.sample_index, self.max_points)
+                    )
+            self.ax.grid(True)
+
+            if self.plot_type.get() == "line":
+                self.ax.plot(self.x_data, self.y_data, label = "Actual Read Voltage")
+                if len(self.target_x_data) > 0:
+                    self.ax.plot(self.target_x_data, self.target_y_data, label="Trajectory Target Voltage")
+            else:
+                self.ax.scatter(self.x_data, self.y_data, label="Actual Voltage")
+                if len(self.target_x_data) > 0:
+                    self.ax.scatter(self.target_x_data, self.target_y_data, label="Target Voltage")
+
+            # Add legend
+            self.ax.legend()
+
+            # Keep plot labels
+            self.ax.set_title("DC Motor Response")
+            self.ax.set_ylabel("Voltage (V)")
+            self.ax.set_xlabel("Sample #")
+
+            self.canvas.draw()
+
+        self.window.after(int(1000*float(self.sample_interval_entry.get())), self.update_plot)
 
     def stop_plot(self):
         self.status_label.config(text="Plotting Stopped", fg="red")
@@ -356,23 +492,39 @@ class App(tk.Tk):
         self.real_mode_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
 
+        self.running = False
+        ser.write(str("s0" + "\n").encode())  # Send stop command to Arduino
+
     def clear_plot(self):
         self.status_label.config(text="Plot Cleared", fg="purple")
+        self.start_button.config(state=tk.NORMAL)
+        self.running = False            
+        self.x_data.clear()
+        self.y_data.clear()
+        self.target_x_data.clear()
+        self.target_y_data.clear()
+        self.sample_index = 0
+
+        # Ensure graph gets redrawn to be fully reset
+        self.ax.cla()
+        self.ax.set_ylim(*self.get_y_limits())
+        self.ax.set_xlim(0, self.max_points)
+        self.ax.grid(True)
+
+        # Keep the axis labels when clearing
+        self.ax.set_title("DC Motor Response")
+        self.ax.set_ylabel("Voltage (V)")
+        self.ax.set_xlabel("Sample #")
+        self.canvas.draw()
 
     def send_interval(self):
         self.status_label.config(text=f"Sent Interval = {self.sample_interval_entry.get()}s", fg="purple")
+        ser.write(str("t" + self.sample_interval_entry.get() + "\n").encode())  # Send the sampling interval to the Arduino
 
     def send_duration(self):
         self.status_label.config(text=f"Sent Duration: {self.sample_duration_entry.get()}s", fg="purple")
+        ser.write(str("d" + self.sample_duration_entry.get() + "\n").encode())  # Send the sampling duration to the Arduino
 
-    def update_plot_config(self):
-        self.max_points = int(self.num_data_points_entry.get())
-        self.x_data = deque(maxlen=self.max_points)
-        self.y_data = deque(maxlen=self.max_points)
-        self.ax.set_xlim(0, self.max_points)
-        self.ax.set_ylim(*self.get_y_limits())
-        self.canvas.draw()
-        self.status_label.config(text="Plot Config Updated", fg="purple")
     
     def get_y_limits(self):
         try:
@@ -394,9 +546,11 @@ class App(tk.Tk):
         
     def send_step_input(self):
         self.status_label.config(text=f"Sent Step Input: {self.step_input_entry.get()} V", fg="green")
+        ser.write(str("v" + self.step_input_entry.get() + "\n").encode())  # Send the step input voltage to the Arduino
     
     def send_kp(self):
         self.status_label.config(text=f"Sent Kp Gain: {self.kp_entry.get()}", fg="green")
+        ser.write(str("p" + self.kp_entry.get() + "\n").encode()) 
 
     def send_ki(self):
         self.status_label.config(text=f"Sent Ki Gain: {self.ki_entry.get()}", fg="green")
@@ -404,16 +558,14 @@ class App(tk.Tk):
     def remove_feedback(self):
         self.status_label.config(text="Removed Feedback (Open Loop)", fg="green")
 
-# Casey authored the preview trajectory function 
-#   It pulls the timing settings from the plot control frame and checks that the full trajectory can be shown with the plots duration
-#   It then creates trajectory arrays based on the starting/ending voltages and the individual durations
-#   It clears any existing plotted data before redrawing the canvas with the piecewise function
-    def preview_trajectory(self):
+# -------------------------------------
+# ----  # Functions for Trajectory
+# -------------------------------------
+    #   It pulls the timing settings from the plot control frame and checks that the full trajectory can be shown with the plots duration
+    #   It then creates trajectory arrays based on the starting/ending voltages and the individual durations
+    #   It clears any existing plotted data before redrawing the canvas with the piecewise function
+    def send_trajectory(self):
         try:
-            # Get the timing settings from plot controls
-            sample_frequency = float(self.sample_interval_entry.get())
-            sample_duration = float(self.sample_duration_entry.get())
-
             # Get the individual segment settings
             segment_1 = [
                 float(self.segment_1_start_entry.get()),
@@ -433,45 +585,82 @@ class App(tk.Tk):
                 float(self.segment_3_duration_entry.get())
             ]
 
-            total_segment_duration = segment_1(2) + segment_2(2) + segment_3(2)
-
-            if total_segment_duration < sample_duration:
-                self.show_error("Plot Duration < Trajectory Duration. Cannot Preview")
+            # Confirm the whole trajectory can be shown
+            total_segment_duration = segment_1[2] + segment_2[2] + segment_3[2]
+            sample_duration = float(self.sample_duration_entry.get())
+            if total_segment_duration > sample_duration:
+                self.show_error("Plot Duration < Trajectory Duration. Cannot Display Full Trajectory")
                 return
+       
+            # Combine into one list, send to arduino, and update status bar
+            trajectory_values = segment_1 + segment_2 + segment_3
+            ser.write(str("j" + ",".join(str(v) for v in trajectory_values) + "\n").encode())
+            self.status_label.config(text="Sent Trajectory to Arduino", fg="dark orange")
 
-            
-            self.status_label.config(text="Trajectory Preview", fg="dark orange")
-        
         except ValueError:
             self.show_error("Invalid Value(s) in Trajectory Entries")
+        
 
-    def send_trajectory(self):
-        self.status_label.config(text="Sent Trajectory to Motor", fg="dark orange")
-
-    def send_single_cw(self):
-        self.status_label.config(text="Sent Single CW Command", fg="blue")
-    
-    def send_single_ccw(self):
-        self.status_label.config(text="Sent Single CCW Command", fg="blue")
-
-    def send_N_cw(self):
-        N = self.cw_slider.get()
-        self.status_label.config(text=f"Sent -{N}- CW Commands", fg="blue")
-    
-    def send_M_ccw(self):
-        M = self.ccw_slider.get()
-        self.status_label.config(text=f"Sent -{M}- CCW Commands", fg="blue")
+# -------------------------------------
+# ----  # Functions for Disc Motion
+# -------------------------------------
+    def start_disc_motion(self):
+        self.status_label.config(text="Sent Start Command for Disc, Homming", fg="green")
+        ser.write(str("h" + "\n").encode()) # Send start command to Arduino
+        self.start_disc_button.config(state=tk.DISABLED)
 
     def stop_disc_motion(self):
         self.status_label.config(text="Sent Stop Command for Disc", fg="red")
+        ser.write(str("q" + "\n").encode())
+        self.start_disc_button.config(state=tk.NORMAL)
 
+    # Read the Radio Buttons to get speed
+    def get_disc_speed(self) -> str:
+        if self.disc_speed == "slow":
+            return 'l'
+        elif self.disc_speed == "medium":
+            return 'm'
+        elif self.disc_speed == "fast":
+            return 'f'
+
+    ##########
+    # All send motion commands will send character, +/- , and the number of revolutions
+    ##########
+    def send_single_cw(self):
+        self.status_label.config(text="Sent Single CW Command", fg="blue")
+        speed = str(self.get_disc_speed())
+        ser.write(str(speed + "+1" + "\n").encode())
+
+    def send_single_ccw(self):
+        self.status_label.config(text="Sent Single CCW Command", fg="blue")
+        speed = str(self.get_disc_speed())
+        ser.write(str(speed + "-1" + "\n").encode())
+
+    def send_N_cw(self):
+        N = str(self.cw_slider.get())
+        self.status_label.config(text=f"Sent {N} CW Commands", fg="blue")
+        speed = str(self.get_disc_speed())
+        ser.write(str(speed + "+" + N + "\n").encode())
+
+    def send_M_ccw(self):
+        M = str(self.ccw_slider.get())
+        self.status_label.config(text=f"Sent {M} CCW Commands", fg="blue")
+        speed = str(self.get_disc_speed())
+        ser.write(str(speed + "-" + M + "\n").encode())
+
+# -------------------------------------
+# ----  # Functions for showing errors
+# -------------------------------------
     def show_error(self, message):
         self.status_label.config(text=f"Error: {message}", fg="red")
 
     def clear_error(self):
         self.status_label.config(
             text="Status: Ready                   Errors: None", fg="green")
-    
+
+# -------------------------------------
+# ----  # Function to kill everything when GUI exits
+# -------------------------------------
     def on_closing(self):
         self.running = False
         self.serial_thread_running = False
