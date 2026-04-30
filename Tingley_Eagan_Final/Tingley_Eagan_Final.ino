@@ -18,6 +18,8 @@
  *   o1       — Enable open-loop mode
  *   s1       — Start DC motor run
  *   s0       — Stop DC motor
+ *   j<dur>,<vStart>,<vEnd>,<dur>,<vStart>,<vEnd>,<dur>,<vStart>,<vEnd>
+ *            — Load 3 trajectory segments, then sent s1 to execute
  *
  * TODO: FreeRTOS
  * TODO: do we need pwm.end() for speed changing?
@@ -73,6 +75,7 @@ bool cmdExit = false;
 // DC motor state def
 const byte DC_IDLE = 0;
 const byte DC_PLOTTING = 1;
+const byte DC_TRAJECTORY = 2;
 
 byte dcState, dcNextState;
 
@@ -88,8 +91,10 @@ float Ki = 0.0;
 bool openLoop = false;
 
 // DC PI variables
-double integral       = 0.0;
-double controlOutput  = 0.0;
+double integral = 0.0;
+double controlOutput = 0.0;
+int currentSegment = 0;
+unsigned long segStartTime_ms = 0;
 
 // DC timing
 unsigned long plotStartTime_ms  = 0;
@@ -104,7 +109,18 @@ bool dcCmdV = false;
 bool dcCmdP = false;
 bool dcCmdI = false;
 bool dcCmdO = false;
+bool dcCmdTraj = false;
 float dcCmdVal = 0.0;
+
+// DC Segment struct for trajectory
+struct Segment {
+  float duration;
+  float startV;
+  float endV;
+};
+const int MAX_SEGMENTS = 3;
+Segment segments[MAX_SEGMENTS];
+int numSegments = 0;
 
 const float V_MIN = 0.0;
 const float V_MAX = 12.0;
@@ -113,6 +129,37 @@ const float V_MAX = 12.0;
 String user_input;
 char command;
 float val;
+
+
+// Parse segment trajectories
+void parseTrajectory(String data) {
+  numSegments = 0;
+  int idx = 0;
+
+  while (data.length() > 0 && numSegments < MAX_SEGMENTS) {
+    float duration = nextFloat(data, idx);
+    float startV = nextFloat(data, idx);
+    float endV = nextFloat(data, idx);
+
+    segments[numSegments++] = {duration, startV, endV};
+  }
+}
+
+
+float nextFloat(String &data, int &idx) {
+  int commaPos = data.indexOf(',');
+  float val;
+
+  if (commaPos == -1) {
+    // Last token
+    val = data.toFloat();
+    data = "";
+   } else {
+    val = data.substring(0, commaPos).toFloat();
+    data = data.substring(commaPos + 1);
+  }
+  return val;
+}
 
 
 /**
@@ -136,6 +183,7 @@ float fmap(float x, float in_min, float in_max, float out_min, float out_max) {
  * @param duty    Duty cycle percent (0–100)
  */
 void diskMotorRun(byte dir, float freq, float duty) {
+  pwm.end();
   digitalWrite(dirPin, dir);
   pwm.begin(freq, 0.0f);
   pwm.pulse_perc(duty);
@@ -143,6 +191,7 @@ void diskMotorRun(byte dir, float freq, float duty) {
 
 /** Stop the disk */
 void diskMotorStop() {
+  pwm.end();
   analogWrite(stepPin, 0);
 }
 
@@ -221,7 +270,7 @@ void readSerial() {
   
   if (user_input.length() > 0) {
     command = user_input.charAt(0);
-    val = user_input.substring(1).toFloat();
+    val = 0.0f;        
 
     switch(command) {
 
@@ -229,33 +278,51 @@ void readSerial() {
       case 'h': cmdStart = true; break;     // Home / start  
       case 'x': cmdExit = true; break;      // Exit
       case 'q': cmdStop = true; break;      // Stop
-      case 'l': cmdPWMFreq = 250.0; break;  // Low speed
-      case 'm': cmdPWMFreq = 500.0; break;  // Medium speed
-      case 'f': cmdPWMFreq = 750.0; break;  // High speed
+      case 'l':                             // Low speed
+        cmdPWMFreq = 250.0; 
+
+        // Read rest of input
+        val = strtof(user_input.substring(1).c_str(), NULL);
+        cmdDir = (val > 0) ? CW : CCW;
+        cmdCount = fabsf(val);
+        cmdReady = true;
+        break;  
+      case 'm':                             // Medium speed
+        cmdPWMFreq = 500.0; 
+
+        // Read rest of input
+        val = strtof(user_input.substring(1).c_str(), NULL);
+        cmdDir = (val > 0) ? CW : CCW;
+        cmdCount = fabsf(val);
+        cmdReady = true;
+        break;
+      case 'f':                             // High speed
+        cmdPWMFreq = 750.0; 
+
+        // Read rest of input
+        val = strtof(user_input.substring(1).c_str(), NULL);
+        cmdDir = (val > 0) ? CW : CCW;
+        cmdCount = fabsf(val);
+        cmdReady = true;
+        break;  
       
-      case '+':                             // CW N rotations
-        cmdDir = CW;
-        cmdCount = abs(val);
-        cmdReady = true;
-        break;
-  
-      case '-':                             // CCW N rotations
-        cmdDir = CCW;
-        cmdCount = abs(val);
-        cmdReady = true;
-        break;
 
       // DC motor commands
-      case 't': dcCmdT = true; dcCmdVal = val; break; // Sample interval (s)
-      case 'd': dcCmdD = true; dcCmdVal = val; break; // Run duration (s)
-      case 'v': dcCmdV = true; dcCmdVal = val; break; // Target voltage (V)
-      case 'p': dcCmdP = true; dcCmdVal = val; break; // Kp
-      case 'i': dcCmdI = true; dcCmdVal = val; break; // Ki
-      case 'o': dcCmdO = true; dcCmdVal = val; break; // Open/closed loop
+      case 't': dcCmdT = true; dcCmdVal = user_input.substring(1).toFloat(); break; // Sample interval (s)
+      case 'd': dcCmdD = true; dcCmdVal = user_input.substring(1).toFloat(); break; // Run duration (s)
+      case 'v': dcCmdV = true; dcCmdVal = user_input.substring(1).toFloat(); break; // Target voltage (V)
+      case 'p': dcCmdP = true; dcCmdVal = user_input.substring(1).toFloat(); break; // Kp
+      case 'i': dcCmdI = true; dcCmdVal = user_input.substring(1).toFloat(); break; // Ki
+      case 'o': dcCmdO = true; dcCmdVal = user_input.substring(1).toFloat(); break; // Open/closed loop
 
-      case 's':                                       // Start/stop
-        if (val == 1.0) dcCmdStart = true;
+      case 's':   // Start/stop
+        if (user_input.substring(1).toFloat() == 1.0) dcCmdStart = true;
         else dcCmdStop = true;
+        break;
+
+      case 'j':
+        dcCmdTraj = true;
+        parseTrajectory(user_input.substring(1));
         break;
     }
 
@@ -450,12 +517,98 @@ void DCSequence(void) {
       // TEST: Start command received
       if (dcCmdStart) {
         dcCmdStart = false;
-        dcNextState = DC_PLOTTING;
         EntryDCIdle = 0;
+
+        // If trajectory segments loaded, go to trajectory mode
+        if (numSegments > 0) {
+          currentSegment = 0;
+          dcNextState = DC_TRAJECTORY;
+        } else {
+          dcNextState = DC_PLOTTING;
+        }
       }
 
       dcCmdStop = false;
       break;
+
+
+    case DC_TRAJECTORY:
+      // ENTRY: start first segment
+      if (EntryDCPlotting == 0) {
+        segStartTime_ms = millis();
+        lastSampleTime_ms = segStartTime_ms;
+        integral = 0.0;
+        controlOutput = 0.0;
+        EntryDCPlotting = 1;
+        EntryDCIdle = 0;
+      }
+
+      // EXIT: stop command sent
+      if (dcCmdStop) {
+        dcCmdStop = false;
+        numSegments = 0;
+        dcMotorStop();
+        EntryDCPlotting = 0;
+        dcNextState = DC_IDLE;
+        break;
+      }
+
+      // ACTION: sample on interval
+      if ((millis() - lastSampleTime_ms) >= (unsigned long)sampleInterval_ms) {
+        lastSampleTime_ms = millis();
+
+        Segment &seg = segments[currentSegment];
+        float elapsed = (float)(millis() - segStartTime_ms);
+
+        // Linear interpolation within segment
+        float alpha = constrain(elapsed / (seg.duration * 1000.0f), 0.0f, 1.0f);
+        float targetV = seg.startV + alpha * (seg.endV - seg.startV);
+
+        float voltage = dcSensorReadVolts();
+
+        if (openLoop) {
+          // Open loop = desired is exactly applied as output
+          controlOutput = targetV;
+        } else {
+          // Closed-loop PI: compute error and accumulate integral
+          double error = targetV - voltage;
+    
+          integral += error * sampleInterval_ms;
+          integral = constrain(integral, V_MIN / Ki, V_MAX / Ki);  // anti-windup
+    
+          controlOutput = (Kp * error) + (Ki * integral);
+        }
+
+        // Scale control output voltage to 8-bit PWM, clamped to valid range
+        int pwmVal = (int)constrain((constrain(controlOutput, V_MIN, V_MAX) / V_MAX) * 255.0, 0, 255);
+        dcMotorSet(pwmVal);
+
+        Serial.print("d,");
+        Serial.print(voltage);
+        Serial.print(',');
+        Serial.print(pwmVal);
+        Serial.print(',');
+        Serial.println(targetV);
+      }
+
+      // ADVANCE: segment duration elapsed, move to next
+      if ((millis() - segStartTime_ms) >= (unsigned long)(segments[currentSegment].duration * 1000.0f)) {
+        currentSegment++;
+
+        // EXIT: All segments done
+        if (currentSegment >= numSegments) {
+          dcMotorStop();
+          numSegments = 0;
+          EntryDCPlotting = 0;
+          dcNextState = DC_IDLE;
+        } else {
+          // Start next segment, reset integrator and timer
+          segStartTime_ms = millis();
+          integral = 0.0;
+        }
+      }
+      break;
+
 
     case DC_PLOTTING:
       // ENTRY: record start times, reset integrator
@@ -476,7 +629,7 @@ void DCSequence(void) {
         break;
       }
 
-      // EXIT: stop command
+      // EXIT: stop command sent
       if (dcCmdStop) {
         dcCmdStop = false;
         dcMotorStop();
