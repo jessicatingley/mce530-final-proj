@@ -16,7 +16,7 @@
  *   p<val>   — Set Kp (switches to closed-loop)
  *   i<val>   — Set Ki (switches to closed-loop)
  *   o1       — Enable open-loop mode
- *   j<dur>,<vStart>,<vEnd>,<dur>,<vStart>,<vEnd>,<dur>,<vStart>,<vEnd>
+ *   j<vStart>,<vEnd>,<dur>,<vStart>,<vEnd>,<dur>,<vStart>,<vEnd>,<dur>
  *            — Load 3 trajectory segments, then sent s1 to execute
  *   s1       — Start DC motor run
  *   s0       — Stop DC motor
@@ -114,9 +114,9 @@ float dcCmdVal = 0.0;
 
 // DC Segment struct for trajectory
 struct Segment {
-  float duration;
   float startV;
   float endV;
+  float duration;
 };
 const int MAX_SEGMENTS = 3;
 Segment segments[MAX_SEGMENTS];
@@ -137,11 +137,11 @@ void parseTrajectory(String data) {
   int idx = 0;
 
   while (data.length() > 0 && numSegments < MAX_SEGMENTS) {
-    float duration = nextFloat(data, idx);
     float startV = nextFloat(data, idx);
     float endV = nextFloat(data, idx);
+    float duration = nextFloat(data, idx);
 
-    segments[numSegments++] = {duration, startV, endV};
+    segments[numSegments++] = {startV, endV, duration};
   }
 }
 
