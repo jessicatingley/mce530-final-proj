@@ -16,10 +16,10 @@
  *   p<val>   — Set Kp (switches to closed-loop)
  *   i<val>   — Set Ki (switches to closed-loop)
  *   o1       — Enable open-loop mode
- *   s1       — Start DC motor run
- *   s0       — Stop DC motor
  *   j<dur>,<vStart>,<vEnd>,<dur>,<vStart>,<vEnd>,<dur>,<vStart>,<vEnd>
  *            — Load 3 trajectory segments, then sent s1 to execute
+ *   s1       — Start DC motor run
+ *   s0       — Stop DC motor
  *
  * TODO: FreeRTOS
  * TODO: do we need pwm.end() for speed changing?
