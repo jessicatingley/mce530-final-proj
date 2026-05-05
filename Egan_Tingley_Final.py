@@ -20,7 +20,7 @@ import serial
 # Setting up connection to serial port for arduino data collection (make sure to change the COM port to match your system)
 from pyparsing import line
 import serial
-ser = serial.Serial('COM7', 38400, timeout=0)  # Update 'COM__' to the Arduino's port
+ser = serial.Serial('/dev/ttyACM0', 38400, timeout=0)  # Update 'COM__' to the Arduino's port
 
 class App(tk.Tk):
 
@@ -435,6 +435,14 @@ class App(tk.Tk):
         t = time.perf_counter() - self.start_time
 
         if t >= float(self.sample_duration_entry.get()):
+            while not self.serial_queue.empty():
+                voltage, target = self.serial_queue.get()
+                self.x_data.append(self.sample_index)
+                self.y_data.append(voltage)
+                if target is not None:
+                    self.target_x_data.append(self.sample_index)
+                    self.target_y_data.append(target)
+                self.sample_index += 1
             self.stop_plot()
             return
         
@@ -459,7 +467,7 @@ class App(tk.Tk):
             self.ax.set_ylim(*self.get_y_limits())
 
             self.ax.set_xlim(
-                    self.x_data[0],
+                    max(0, self.sample_index - self.max_points),
                     max(self.sample_index, self.max_points)
                     )
             self.ax.grid(True)
