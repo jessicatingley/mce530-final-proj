@@ -20,7 +20,7 @@ import serial
 # Setting up connection to serial port for arduino data collection (make sure to change the COM port to match your system)
 from pyparsing import line
 import serial
-ser = serial.Serial('/dev/ttyACM0', 38400, timeout=0)  # Update 'COM__' to the Arduino's port
+ser = serial.Serial('COM6', 500000, timeout=0.1)  # Update 'COM__' to the Arduino's port
 
 class App(tk.Tk):
 
@@ -356,6 +356,27 @@ class App(tk.Tk):
 
         self.canvas = graph
 
+    # testing
+    def compute_target_voltage(self, sample_index):
+        interval = float(self.sample_interval_entry.get())
+        t = sample_index * interval
+
+        segments = [
+            (float(self.segment_1_start_entry.get()), float(self.segment_1_end_entry.get()), float(self.segment_1_duration_entry.get())),
+            (float(self.segment_2_start_entry.get()), float(self.segment_2_end_entry.get()), float(self.segment_2_duration_entry.get())),
+            (float(self.segment_3_start_entry.get()), float(self.segment_3_end_entry.get()), float(self.segment_3_duration_entry.get())),
+        ]
+
+        elapsed = 0
+        for start_v, end_v, duration in segments:
+            if t <= elapsed + duration:
+                frac = (t - elapsed) / duration
+                return start_v + frac * (end_v - start_v)
+            elapsed += duration
+        
+        return None
+    
+
     def update_plot_config(self):
         """Ensures graph doesn't clear when num points is changed"""
         try:
@@ -384,9 +405,9 @@ class App(tk.Tk):
         # Preserve existing data
         self.x_data = deque(self.x_data, maxlen=new_max)
         self.y_data = deque(self.y_data, maxlen=new_max)
+        self.max_points = new_max
         self.target_x_data = deque(maxlen=self.max_points)
         self.target_y_data = deque(maxlen=self.max_points)
-        self.max_points = new_max
         self.y_min = y_min
         self.y_max = y_max
 
@@ -439,6 +460,8 @@ class App(tk.Tk):
                 voltage, target = self.serial_queue.get()
                 self.x_data.append(self.sample_index)
                 self.y_data.append(voltage)
+                # testing
+                target = self.compute_target_voltage(self.sample_index)
                 if target is not None:
                     self.target_x_data.append(self.sample_index)
                     self.target_y_data.append(target)
@@ -562,9 +585,11 @@ class App(tk.Tk):
 
     def send_ki(self):
         self.status_label.config(text=f"Sent Ki Gain: {self.ki_entry.get()}", fg="green")
+        ser.write(str("i" + self.ki_entry.get() + "\n").encode())
     
     def remove_feedback(self):
         self.status_label.config(text="Removed Feedback (Open Loop)", fg="green")
+        ser.write(str("o" +  "1" + "\n").encode()) 
 
 # -------------------------------------
 # ----  # Functions for Trajectory
@@ -624,36 +649,38 @@ class App(tk.Tk):
 
     # Read the Radio Buttons to get speed
     def get_disc_speed(self) -> str:
-        if self.disc_speed == "slow":
+        speed = self.disc_speed.get()
+        if speed == "slow":
             return 'l'
-        elif self.disc_speed == "medium":
+        elif speed == "medium":
             return 'm'
-        elif self.disc_speed == "fast":
-            return 'f'
+        elif speed == "fast":
+            return "f"
+        return 'm'
 
     ##########
     # All send motion commands will send character, +/- , and the number of revolutions
     ##########
     def send_single_cw(self):
         self.status_label.config(text="Sent Single CW Command", fg="blue")
-        speed = str(self.get_disc_speed())
+        speed = self.get_disc_speed()
         ser.write(str(speed + "+1" + "\n").encode())
 
     def send_single_ccw(self):
         self.status_label.config(text="Sent Single CCW Command", fg="blue")
-        speed = str(self.get_disc_speed())
+        speed = self.get_disc_speed()
         ser.write(str(speed + "-1" + "\n").encode())
 
     def send_N_cw(self):
         N = str(self.cw_slider.get())
         self.status_label.config(text=f"Sent {N} CW Commands", fg="blue")
-        speed = str(self.get_disc_speed())
+        speed = self.get_disc_speed()
         ser.write(str(speed + "+" + N + "\n").encode())
 
     def send_M_ccw(self):
         M = str(self.ccw_slider.get())
         self.status_label.config(text=f"Sent {M} CCW Commands", fg="blue")
-        speed = str(self.get_disc_speed())
+        speed = self.get_disc_speed()
         ser.write(str(speed + "-" + M + "\n").encode())
 
 # -------------------------------------
