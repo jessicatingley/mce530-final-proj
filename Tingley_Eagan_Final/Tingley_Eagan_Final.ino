@@ -110,7 +110,7 @@ float dcSensorReadVolts();
 
 
 void setup() {
-  Serial.begin(38400);
+  Serial.begin(500000);
 
   // Stepper / disk
   pinMode(stepPin, OUTPUT);
@@ -445,7 +445,7 @@ void dc_thread_func(void *pvParameters) {
   float stepval_V = 3.0;
   float Kp = 0.0;
   float Ki = 0.0;
-  bool openLoop = false;
+  bool openLoop = true;
 
   // DC PI variables
   double integral = 0.0;
@@ -463,7 +463,6 @@ void dc_thread_func(void *pvParameters) {
     // Apply parameter updates before going into state logic
     if (dcCmdT) {
       float t = dcCmdVal;
-      if (t < 0.001) t = 0.001;  // TODO: do we need this?
       sampleInterval_ms = t * 1000.0;
       dcCmdT = false;
     }
