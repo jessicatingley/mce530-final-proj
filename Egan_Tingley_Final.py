@@ -1,11 +1,11 @@
 # MCE 530 Final Project - GUI for DC Motor Control and Stepper Motor Disc with Arduino and Simulations
 
 # Authors: Casey Egan and Jessica Tingley
-# Submission Date:
+# Submission Date: 5-7-2026
 
 # The overwhelming majority of the code was written collaboratively, but the individual contributions are highlghted
 
-# 
+
 # Import necessary libraries
 import tkinter as tk                         # Import tkinter libray   
 from matplotlib.figure import Figure         # Import Figure class for plotting
@@ -17,7 +17,7 @@ import threading
 import queue
 import serial
 
-# Setting up connection to serial port for arduino data collection (make sure to change the COM port to match your system)
+# Setting up connection to serial port for arduino data collection (make sure to change the COM port and baud rate to match the setup)
 from pyparsing import line
 import serial
 ser = serial.Serial('COM6', 500000, timeout=0.1)  # Update 'COM__' to the Arduino's port
@@ -60,14 +60,18 @@ class App(tk.Tk):
         self.clear_button = tk.Button(plot_control_frame, text="Clear", command=self.clear_plot)
         self.clear_button.grid(row=0, column=2, padx=10, pady=10)
 
+        # Create blank row (where simulation vs real would go, if time allowed)
+        self.blank_row = tk.Label(plot_control_frame, text="")
+        self.blank_row.grid(row=1, column=0, padx=10, pady=10)
+
         # Create option for simulation or real connection to setup
-        self.select_mode_label = tk.Label(plot_control_frame, text="Select Mode:")
-        self.select_mode_label.grid(row=1, column=0, padx=10, pady=10)
-        self.mode = tk.StringVar(value="simulation")     # Default to simulation mode
-        self.simulation_mode_button = tk.Button(plot_control_frame, text="Simulation", command=self.select_simulation_mode)
-        self.simulation_mode_button.grid(row=1, column=1, padx=10, pady=10)
-        self.real_mode_button = tk.Button(plot_control_frame, text="Real Setup", command=self.select_real_lab_setup_mode)
-        self.real_mode_button.grid(row=1, column=2, padx=10, pady=10)
+        # self.select_mode_label = tk.Label(plot_control_frame, text="Select Mode:")
+        # self.select_mode_label.grid(row=1, column=0, padx=10, pady=10)
+        # self.mode = tk.StringVar(value="simulation")     # Default to simulation mode
+        # self.simulation_mode_button = tk.Button(plot_control_frame, text="Simulation", command=self.select_simulation_mode)
+        # self.simulation_mode_button.grid(row=1, column=1, padx=10, pady=10)
+        # self.real_mode_button = tk.Button(plot_control_frame, text="Real Setup", command=self.select_real_lab_setup_mode)
+        # self.real_mode_button.grid(row=1, column=2, padx=10, pady=10)
 
         # Radio buttons for plot type selection
         self.plot_type_label = tk.Label(plot_control_frame, text="Plot Type:")
@@ -227,6 +231,8 @@ class App(tk.Tk):
         self.send_trajectory_button = tk.Button(self.velocity_trajectory_frame, text="Send Trajectory", command=self.send_trajectory)
         self.send_trajectory_button.place(x=200, y=180)
  
+        # Flag for trajectory mode vs step input (initialize to step input)
+        self.trajectory_mode = False
 
 # -------------------------------------
 # ----  # Create frame for controlling the stepper motor disc and displaying the net revolutions
@@ -234,7 +240,7 @@ class App(tk.Tk):
         self.disc_control_frame = tk.LabelFrame(window, text="Stepper Motor Disc Controls", padx=10, pady=10, fg="blue")
         self.disc_control_frame.place(x=50, y=480, width=240, height=350)
 
-        # Radio button to set speeds with blank space vehind it to preserve grid layout
+        # Radio button to set speeds with blank space behind it to preserve grid layout
         self.blank_space = tk.Label(self.disc_control_frame, text="")
         self.blank_space.grid(row=0, column=0, padx=10, pady=20)
 
@@ -282,12 +288,12 @@ class App(tk.Tk):
         self.create_plot()
 
 #### ------------------------------------------------------- ####
-#### - Start Threading After Initialization GUI - ####
+#### - Start Threading After Initialization GUI and Read Serial - ####
 #### ------------------------------------------------------- ####
         self.serial_thread_running = True
         self.serial_thread = threading.Thread(target=self.read_serial_data, daemon=True)
         self.serial_thread.start()
-    # Function to continuosly read serial data from the Arduino
+    # Function to continuosly read serial data from the Arduino 
     # This will split both the motor speed (voltage reading converted from ADC) and the PWM value (control output) 
     def read_serial_data(self):
         while self.serial_thread_running:
@@ -325,6 +331,26 @@ class App(tk.Tk):
                     pass
             else:
                 time.sleep(0.001)  # Sleep briefly to prevent high CPU usage                
+
+    # Helper function to display error and not send anything if there is not a valid number
+    def get_valid_float_entry(self, entry, name, min_val=None, max_val=None):
+        try:
+            value = float(entry.get())
+        except ValueError:
+            self.show_error(f"{name} must be a number.")
+            return None
+        
+        # Check if number is within range if needed
+        if min_val is not None and value < min_val:
+            self.show_error(f"{name} must be >= {min_val}")
+            return None
+        if max_val is not None and value > max_val:
+            self.show_error(f"{name} must be <= {max_val}")
+            return None
+        
+        value_str = str(value)
+
+        return value_str
 #### ------------------------------------------------------- ####
 #### ------------------------------------------------------- ####
 
@@ -356,33 +382,13 @@ class App(tk.Tk):
 
         self.canvas = graph
 
-    # testing
-    def compute_target_voltage(self, sample_index):
-        interval = float(self.sample_interval_entry.get())
-        t = sample_index * interval
-
-        segments = [
-            (float(self.segment_1_start_entry.get()), float(self.segment_1_end_entry.get()), float(self.segment_1_duration_entry.get())),
-            (float(self.segment_2_start_entry.get()), float(self.segment_2_end_entry.get()), float(self.segment_2_duration_entry.get())),
-            (float(self.segment_3_start_entry.get()), float(self.segment_3_end_entry.get()), float(self.segment_3_duration_entry.get())),
-        ]
-
-        elapsed = 0
-        for start_v, end_v, duration in segments:
-            if t <= elapsed + duration:
-                frac = (t - elapsed) / duration
-                return start_v + frac * (end_v - start_v)
-            elapsed += duration
-        
-        return None
-    
 
     def update_plot_config(self):
-        """Ensures graph doesn't clear when num points is changed"""
+        # Ensures graph doesn't clear when num points or y-max/y-min are changed
         try:
             new_max = int(self.num_data_points_entry.get())
-            if not (50 <= new_max <= 5000):
-                self.show_error("Number of data points must be between 50 and 5000.")
+            if not (50 <= new_max <= 10000):
+                self.show_error("Number of data points must be between 50 and 10000.")
                 return
         except ValueError:
             self.show_error("Number of data points must be an integer.")
@@ -416,22 +422,12 @@ class App(tk.Tk):
         self.canvas.draw()
 
 
-# Create empty functions to test GUI spacing and button functionality before adding in the serial communication and plotting code
-    def select_simulation_mode(self):
-        self.status_label.config(text="Simulation Mode Selected", fg="purple")
-        self.simulation_mode_button.config(state=tk.DISABLED)
-        self.real_mode_button.config(state=tk.NORMAL)
-    
-    def select_real_lab_setup_mode(self):
-        self.status_label.config(text="Real Lab Setup Mode Selected", fg="purple")
-        self.simulation_mode_button.config(state=tk.NORMAL)
-        self.real_mode_button.config(state=tk.DISABLED)
-    
+    # Start the DC motor and plot
     def start_plot(self):
         self.status_label.config(text="Plotting Started DC Motor Running", fg="green")
         self.start_button.config(state=tk.DISABLED)
-        self.simulation_mode_button.config(state=tk.DISABLED)
-        self.real_mode_button.config(state=tk.DISABLED)
+        #self.simulation_mode_button.config(state=tk.DISABLED)
+        #self.real_mode_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
 
         self.running = True
@@ -460,11 +456,11 @@ class App(tk.Tk):
                 voltage, target = self.serial_queue.get()
                 self.x_data.append(self.sample_index)
                 self.y_data.append(voltage)
-                # testing
-                target = self.compute_target_voltage(self.sample_index)
-                if target is not None:
-                    self.target_x_data.append(self.sample_index)
-                    self.target_y_data.append(target)
+                if self.trajectory_mode:                                            # Plot target if in trajectory mode
+                    target = self.compute_target_voltage(self.sample_index)
+                    if target is not None:
+                        self.target_x_data.append(self.sample_index)
+                        self.target_y_data.append(target)
                 self.sample_index += 1
             self.stop_plot()
             return
@@ -514,13 +510,15 @@ class App(tk.Tk):
 
             self.canvas.draw()
 
-        self.window.after(int(1000*float(self.sample_interval_entry.get())), self.update_plot)
+        # Added GUI refresh to be 2ms, even if sample interval is < 0.002
+        gui_refresh_delay = max(2,int(1000*float(self.sample_interval_entry.get())))
+        self.window.after(gui_refresh_delay, self.update_plot)
 
     def stop_plot(self):
         self.status_label.config(text="Plotting Stopped", fg="red")
         self.start_button.config(state=tk.NORMAL)
-        self.simulation_mode_button.config(state=tk.NORMAL)
-        self.real_mode_button.config(state=tk.NORMAL)
+        #self.simulation_mode_button.config(state=tk.NORMAL)
+        #self.real_mode_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
 
         self.running = False
@@ -548,15 +546,7 @@ class App(tk.Tk):
         self.ax.set_xlabel("Sample #")
         self.canvas.draw()
 
-    def send_interval(self):
-        self.status_label.config(text=f"Sent Interval = {self.sample_interval_entry.get()}s", fg="purple")
-        ser.write(str("t" + self.sample_interval_entry.get() + "\n").encode())  # Send the sampling interval to the Arduino
-
-    def send_duration(self):
-        self.status_label.config(text=f"Sent Duration: {self.sample_duration_entry.get()}s", fg="purple")
-        ser.write(str("d" + self.sample_duration_entry.get() + "\n").encode())  # Send the sampling duration to the Arduino
-
-    
+        
     def get_y_limits(self):
         try:
             y_min = float(self.y_min_entry.get())
@@ -575,18 +565,57 @@ class App(tk.Tk):
         
         return self.y_min, self.y_max
         
-    def send_step_input(self):
-        self.status_label.config(text=f"Sent Step Input: {self.step_input_entry.get()} V", fg="green")
-        ser.write(str("v" + self.step_input_entry.get() + "\n").encode())  # Send the step input voltage to the Arduino
-    
-    def send_kp(self):
-        self.status_label.config(text=f"Sent Kp Gain: {self.kp_entry.get()}", fg="green")
-        ser.write(str("p" + self.kp_entry.get() + "\n").encode()) 
+    # Send the sampling interval to the Arduino ("t" + value)
+    def send_interval(self):
+        value = self.get_valid_float_entry(self.sample_interval_entry, "Sample Interval", min_val=0.001, max_val=1.0)
+        if value is None:
+            return
+        
+        self.status_label.config(text=f"Sent Interval: {value} s", fg="purple")
+        ser.write(str("t" + value + "\n").encode())  
 
-    def send_ki(self):
-        self.status_label.config(text=f"Sent Ki Gain: {self.ki_entry.get()}", fg="green")
-        ser.write(str("i" + self.ki_entry.get() + "\n").encode())
+    # Send the sampling duration to the Arduino ("d" + value)
+    def send_duration(self):
+        value = self.get_valid_float_entry(self.sample_duration_entry, "Sample Duration", min_val=0.0, max_val=None)
+        if value is None:
+            return
+
+        self.status_label.config(text=f"Sent Duration: {value}s", fg="purple")
+        ser.write(str("d" + value + "\n").encode())  
+
+    # Send the step input to the Arduino ("v" + value)
+    def send_step_input(self):
+        # reset to step input mode and clear the target data
+        self.trajectory_mode = False
+        self.target_x_data.clear()
+        self.target_y_data.clear()
+
+        value = self.get_valid_float_entry(self.step_input_entry, "Step Input", min_val=0.0, max_val=5.0)
+        if value is None:
+            return
+
+        self.status_label.config(text=f"Sent Step Input: {value} V", fg="green")
+        ser.write(str("v" + value + "\n").encode())
     
+    # Send the Kp Gain to the Arduino ("p" + value)
+    def send_kp(self):
+        value = self.get_valid_float_entry(self.kp_entry, "Kp Gain", min_val=0.0, max_val=None)
+        if value is None:
+            return
+
+        self.status_label.config(text=f"Sent Kp Gain: {value}", fg="green")
+        ser.write(str("p" + value + "\n").encode()) 
+
+    # Send the Ki Gain to the Arduino ("i" + value)
+    def send_ki(self):
+        value = self.get_valid_float_entry(self.ki_entry, "Ki Gain", min_val=0.0, max_val=None)
+        if value is None:
+            return
+
+        self.status_label.config(text=f"Sent Ki Gain: {value}", fg="green")
+        ser.write(str("i" + value + "\n").encode())
+    
+    # Send remove feedback command to the Arduino ("o" + 1)
     def remove_feedback(self):
         self.status_label.config(text="Removed Feedback (Open Loop)", fg="green")
         ser.write(str("o" +  "1" + "\n").encode()) 
@@ -597,7 +626,7 @@ class App(tk.Tk):
     #   It pulls the timing settings from the plot control frame and checks that the full trajectory can be shown with the plots duration
     #   It then creates trajectory arrays based on the starting/ending voltages and the individual durations
     #   It clears any existing plotted data before redrawing the canvas with the piecewise function
-    def send_trajectory(self):
+    def send_trajectory(self):      
         try:
             # Get the individual segment settings
             segment_1 = [
@@ -618,21 +647,57 @@ class App(tk.Tk):
                 float(self.segment_3_duration_entry.get())
             ]
 
-            # Confirm the whole trajectory can be shown
-            total_segment_duration = segment_1[2] + segment_2[2] + segment_3[2]
-            sample_duration = float(self.sample_duration_entry.get())
-            if total_segment_duration > sample_duration:
-                self.show_error("Plot Duration < Trajectory Duration. Cannot Display Full Trajectory")
-                return
-       
-            # Combine into one list, send to arduino, and update status bar
-            trajectory_values = segment_1 + segment_2 + segment_3
-            ser.write(str("j" + ",".join(str(v) for v in trajectory_values) + "\n").encode())
-            self.status_label.config(text="Sent Trajectory to Arduino", fg="dark orange")
-
+        # Confirm they are floats
         except ValueError:
             self.show_error("Invalid Value(s) in Trajectory Entries")
+            return
         
+        # Combine to loop through the segments, ensuring voltage is 0 <= V <= 5 and that duration >= 0
+        segments = [segment_1, segment_2, segment_3]
+        for i, segment in enumerate(segments, start=1):
+            start_v, end_v, duration = segment
+
+            if not (0 <= start_v <= 5 and 0 <= end_v <= 5):
+                self.show_error(f"Segment {i} voltage(s) must be between 0 and 5 V")
+                return
+            if duration <= 0:
+                self.show_error(f"Segment {i} duration must be greater than 0")
+                return
+
+        # Confirm the whole trajectory can be shown
+        total_segment_duration = segment_1[2] + segment_2[2] + segment_3[2]
+        sample_duration = float(self.sample_duration_entry.get())
+        if total_segment_duration > sample_duration:
+            self.show_error("Plot Duration < Trajectory Duration. Cannot Run")
+            return
+        
+        # Set trajectory mode flag
+        self.trajectory_mode = True         
+    
+        # Combine into one list, send to arduino, and update status bar
+        trajectory_values = segment_1 + segment_2 + segment_3
+        ser.write(str("j" + ",".join(str(v) for v in trajectory_values) + "\n").encode())
+        self.status_label.config(text="Sent Trajectory to Arduino", fg="dark orange")
+        
+    # For computing trajectory and plotting, same logic used on Arduino side
+    def compute_target_voltage(self, sample_index):
+        interval = float(self.sample_interval_entry.get())
+        t = sample_index * interval
+
+        segments = [
+            (float(self.segment_1_start_entry.get()), float(self.segment_1_end_entry.get()), float(self.segment_1_duration_entry.get())),
+            (float(self.segment_2_start_entry.get()), float(self.segment_2_end_entry.get()), float(self.segment_2_duration_entry.get())),
+            (float(self.segment_3_start_entry.get()), float(self.segment_3_end_entry.get()), float(self.segment_3_duration_entry.get())),
+        ]
+
+        elapsed = 0
+        for start_v, end_v, duration in segments:
+            if t <= elapsed + duration:
+                frac = (t - elapsed) / duration
+                return start_v + frac * (end_v - start_v)
+            elapsed += duration
+        
+        return None
 
 # -------------------------------------
 # ----  # Functions for Disc Motion
@@ -655,7 +720,7 @@ class App(tk.Tk):
         elif speed == "medium":
             return 'm'
         elif speed == "fast":
-            return "f"
+            return 'f'
         return 'm'
 
     ##########
